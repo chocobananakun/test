@@ -1,5 +1,4 @@
-// pack_webgl_local.js
-// Unity WebGLを1ファイル化（file://対応版）
+// pack_webgl_local.js (修正版 for file://)
 
 import fs from "fs";
 
@@ -14,6 +13,7 @@ function encodeJSON(path) {
   return Buffer.from(fs.readFileSync(path, "utf8")).toString("base64");
 }
 
+// === ファイル読み込み ===
 const loader = fs.readFileSync(`${base}/UnityLoader.js`, "utf8");
 const data = toBase64(`${base}/10MinutesTillDawnWebGL.data.unityweb`);
 const code = toBase64(`${base}/10MinutesTillDawnWebGL.wasm.code.unityweb`);
@@ -22,31 +22,38 @@ const json = encodeJSON(`${base}/10MinutesTillDawnWebGL.json`);
 
 let html = fs.readFileSync(htmlTemplate, "utf8");
 
+// UnityLoader.js を直接埋め込み
 html = html.replace(/<script.*?UnityLoader\.js.*?<\/script>/, `<script>${loader}</script>`);
-html = html.replace(/"Build\\/10MinutesTillDawnWebGL\\.json"/, `"data:application/json;base64,${json}"`);
 
+// JSONファイルも data URI に差し替え
+html = html.replace(
+  /"Build\/10MinutesTillDawnWebGL\.json"/,
+  `"data:application/json;base64,${json}"`
+);
+
+// === fetch / XMLHttpRequest を完全フック ===
 html = html.replace(
   "</body>",
   `
 <script>
 (() => {
   const files = {
-    "Build/10MinutesTillDawnWebGL.data.unityweb": "${data}",
-    "Build/10MinutesTillDawnWebGL.wasm.code.unityweb": "${code}",
-    "Build/10MinutesTillDawnWebGL.wasm.framework.unityweb": "${framework}"
+    "Build/10MinutesTillDawnWebGL.data.unityweb": "data:application/octet-stream;base64,${data}",
+    "Build/10MinutesTillDawnWebGL.wasm.code.unityweb": "data:application/wasm;base64,${code}",
+    "Build/10MinutesTillDawnWebGL.wasm.framework.unityweb": "data:application/octet-stream;base64,${framework}"
   };
 
-  // fetchを上書き（file://でも動く）
+  // fetch フック
   const origFetch = window.fetch;
   window.fetch = async (url, ...args) => {
     if (files[url]) {
-      const bin = Uint8Array.from(atob(files[url]), c => c.charCodeAt(0));
-      return new Response(bin);
+      const res = await fetch(files[url]); // data URI を直接fetch
+      return res;
     }
     return origFetch(url, ...args);
   };
 
-  // XMLHttpRequest対応（UnityLoader古い版）
+  // XMLHttpRequest フック (古いUnity対応)
   const origOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url) {
     this._localUrl = url;
@@ -55,9 +62,15 @@ html = html.replace(
   const origSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function() {
     if (files[this._localUrl]) {
-      const bin = Uint8Array.from(atob(files[this._localUrl]), c => c.charCodeAt(0));
-      this.response = bin.buffer;
-      this.onload && this.onload({ target: this });
+      fetch(files[this._localUrl])
+        .then(r => r.arrayBuffer())
+        .then(buf => {
+          this.response = buf;
+          this.readyState = 4;
+          this.status = 200;
+          this.onload && this.onload({ target: this });
+          this.onreadystatechange && this.onreadystatechange();
+        });
       return;
     }
     return origSend.apply(this, arguments);
@@ -67,5 +80,6 @@ html = html.replace(
 </body>`
 );
 
+// 出力
 fs.writeFileSync(output, html);
-console.log("✅ file:// 対応 single HTML を生成しました →", output);
+console.log("✅ file:// 完全対応 single HTML を生成しました →", output);
