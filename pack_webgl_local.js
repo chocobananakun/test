@@ -1,85 +1,66 @@
-// pack_webgl_local.js (修正版 for file://)
-
+// pack_single_unity_webgl.js
 import fs from "fs";
 
-const base = "./Build";
-const htmlTemplate = "./index.html";
-const output = "./10min_single.html";
+const BUILD_DIR = "./Build";
+const HTML_FILE = "./index.html";
+const OUTPUT = "./Single_Unity.html";
 
-function toBase64(path) {
+// ファイルをbase64化
+function base64(path) {
   return fs.readFileSync(path).toString("base64");
 }
-function encodeJSON(path) {
-  return Buffer.from(fs.readFileSync(path, "utf8")).toString("base64");
-}
 
-// === ファイル読み込み ===
-const loader = fs.readFileSync(`${base}/UnityLoader.js`, "utf8");
-const data = toBase64(`${base}/10MinutesTillDawnWebGL.data.unityweb`);
-const code = toBase64(`${base}/10MinutesTillDawnWebGL.wasm.code.unityweb`);
-const framework = toBase64(`${base}/10MinutesTillDawnWebGL.wasm.framework.unityweb`);
-const json = encodeJSON(`${base}/10MinutesTillDawnWebGL.json`);
+// JSONファイルもbase64で埋め込む
+const json = fs.readFileSync(`${BUILD_DIR}/10MinutesTillDawnWebGL.json`, "utf8");
 
-let html = fs.readFileSync(htmlTemplate, "utf8");
+// 各アセットをbase64に
+const data = base64(`${BUILD_DIR}/10MinutesTillDawnWebGL.data.unityweb`);
+const wasm = base64(`${BUILD_DIR}/10MinutesTillDawnWebGL.wasm.code.unityweb`);
+const framework = base64(`${BUILD_DIR}/10MinutesTillDawnWebGL.wasm.framework.unityweb`);
 
-// UnityLoader.js を直接埋め込み
-html = html.replace(/<script.*?UnityLoader\.js.*?<\/script>/, `<script>${loader}</script>`);
+let html = fs.readFileSync(HTML_FILE, "utf8");
 
-// JSONファイルも data URI に差し替え
-html = html.replace(
-  /"Build\/10MinutesTillDawnWebGL\.json"/,
-  `"data:application/json;base64,${json}"`
-);
+// main.js や loader.js を読み込む部分を削除して自前のJSを埋め込み
+html = html.replace(/<script.*?Build\/.*?<\/script>/gs, "");
 
-// === fetch / XMLHttpRequest を完全フック ===
-html = html.replace(
-  "</body>",
-  `
+// 下にUnityロード処理を追加
+html = html.replace("</body>", `
 <script>
-(() => {
+(async () => {
+  const config = ${json};
+
+  // base64埋め込みデータ
   const files = {
     "Build/10MinutesTillDawnWebGL.data.unityweb": "data:application/octet-stream;base64,${data}",
-    "Build/10MinutesTillDawnWebGL.wasm.code.unityweb": "data:application/wasm;base64,${code}",
+    "Build/10MinutesTillDawnWebGL.wasm.code.unityweb": "data:application/wasm;base64,${wasm}",
     "Build/10MinutesTillDawnWebGL.wasm.framework.unityweb": "data:application/octet-stream;base64,${framework}"
   };
 
-  // fetch フック
+  // fetchフック
   const origFetch = window.fetch;
   window.fetch = async (url, ...args) => {
     if (files[url]) {
-      const res = await fetch(files[url]); // data URI を直接fetch
+      const res = await origFetch(files[url]);
       return res;
     }
     return origFetch(url, ...args);
   };
 
-  // XMLHttpRequest フック (古いUnity対応)
-  const origOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(method, url) {
-    this._localUrl = url;
-    origOpen.apply(this, arguments);
-  };
-  const origSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function() {
-    if (files[this._localUrl]) {
-      fetch(files[this._localUrl])
-        .then(r => r.arrayBuffer())
-        .then(buf => {
-          this.response = buf;
-          this.readyState = 4;
-          this.status = 200;
-          this.onload && this.onload({ target: this });
-          this.onreadystatechange && this.onreadystatechange();
-        });
-      return;
-    }
-    return origSend.apply(this, arguments);
-  };
+  // UnityのメインJSを生成
+  const unityScript = document.createElement('script');
+  unityScript.src = files["Build/10MinutesTillDawnWebGL.wasm.framework.unityweb"] ? "Build/10MinutesTillDawnWebGL.framework.js" : "";
+  document.body.appendChild(unityScript);
+
+  // Unity Instance 起動
+  const container = document.querySelector("#unity-container") || document.body;
+  const canvas = document.querySelector("#unity-canvas") || document.createElement("canvas");
+  if (!canvas.parentNode) container.appendChild(canvas);
+  await createUnityInstance(canvas, config, (progress) => {
+    console.log("Loading...", progress);
+  });
 })();
 </script>
-</body>`
-);
+</body>`);
 
-// 出力
-fs.writeFileSync(output, html);
-console.log("✅ file:// 完全対応 single HTML を生成しました →", output);
+fs.writeFileSync(OUTPUT, html);
+console.log("✅ Single file Unity WebGL built:", OUTPUT);
